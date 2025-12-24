@@ -1,0 +1,81 @@
+name: Proxmox Node Source
+version: 1.0.0
+rundeckPluginVersion: 1.2
+author: Keith Hudgins
+date: 2025-12-24
+description: Node source plugin for Proxmox cluster - dynamically imports VMs and containers as Rundeck nodes
+providers:
+  - name: proxmox-node-source
+    description: "Node source plugin for Proxmox cluster"
+    title: Proxmox Node Source
+    service: ResourceModelSource
+    plugin-type: script
+    resource-format: resourceyaml
+    script-interpreter: python3
+    script-file: proxmox-node-source.py
+    config:
+      - name: proxmox_host
+        title: Proxmox Host
+        type: String
+        required: true
+        description: Proxmox hostname or IP address
+      - name: proxmox_user
+        title: Proxmox User
+        type: String
+        required: true
+        description: "Proxmox username (format: user@realm, e.g., root@pam)"
+      - name: proxmox_password_storage_path
+        title: Proxmox Password Storage Path
+        type: String
+        required: false
+        description: "Proxmox password or API token. You can enter it directly or select a key storage path."
+        renderingOptions:
+          selectionAccessor: STORAGE_PATH
+          valueConversion: STORAGE_PATH_AUTOMATIC_READ
+          storage-path-root: keys
+      - name: proxmox_password
+        title: Proxmox Password
+        type: String
+        required: false
+        description: "Proxmox password. Leave blank if using key storage."
+        renderingOptions:
+          displayType: PASSWORD
+      - name: proxmox_port
+        title: Proxmox Port
+        type: Integer
+        default: 8006
+        description: "Proxmox API port (default: 8006)"
+      - name: default_username
+        title: Default Username
+        type: String
+        default: root
+        description: "Default username for nodes (default: root)"
+      - name: output_format
+        title: Output Format
+        type: Select
+        required: false
+        default: yaml
+        description: Output format for node definitions
+        values:
+          - yaml
+          - json
+          - xml
+      - name: verify_ssl
+        title: Verify SSL
+        type: Boolean
+        required: false
+        default: false
+        description: "Verify SSL certificates (default: false)"
+      - name: include_vms
+        title: Include VMs
+        type: Boolean
+        required: false
+        default: true
+        description: Include virtual machines (QEMU) in node list
+      - name: include_containers
+        title: Include Containers
+        type: Boolean
+        required: false
+        default: true
+        description: Include containers (LXC) in node list
+

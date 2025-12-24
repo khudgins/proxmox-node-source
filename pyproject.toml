@@ -1,0 +1,59 @@
+[project]
+name = "proxmox-node-source"
+version = "1.0.0"
+description = "Rundeck Node Source Plugin for Proxmox - Polls a Proxmox cluster to list VMs and containers as Rundeck nodes"
+readme = "README.md"
+requires-python = ">=3.7"
+authors = [
+    {name = "Your Name"}
+]
+license = {text = "GPL-3.0-or-later"}
+keywords = ["rundeck", "proxmox", "plugin", "node-source"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "proxmoxer>=2.0.0",
+    "requests>=2.25.0",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = []
+include = [
+    "proxmox-node-source.py",
+    "README.md",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-mock>=3.10.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py36"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
