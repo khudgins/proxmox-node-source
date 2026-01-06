@@ -170,7 +170,7 @@ class TestFullExecution:
         import yaml
         data = yaml.safe_load(output)
         # Should only have containers, no VMs
-        assert all(node['attributes']['proxmox_type'] == 'lxc' for node in data)
+        assert all(node['proxmox_type'] == 'lxc' for node in data)
     
     @patch('proxmox_node_source.ProxmoxAPI')
     @patch('sys.stdout', new_callable=StringIO)
@@ -191,7 +191,7 @@ class TestFullExecution:
         import yaml
         data = yaml.safe_load(output)
         # Should only have VMs, no containers
-        assert all(node['attributes']['proxmox_type'] == 'qemu' for node in data)
+        assert all(node['proxmox_type'] == 'qemu' for node in data)
     
     @patch('proxmox_node_source.ProxmoxAPI')
     @patch('sys.stdout', new_callable=StringIO)

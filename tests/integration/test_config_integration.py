@@ -119,7 +119,7 @@ class TestConfigIntegration:
         import yaml
         data = yaml.safe_load(output)
         # Should only have containers (include_vms=false)
-        assert all(node['attributes']['proxmox_type'] == 'lxc' for node in data)
+        assert all(node['proxmox_type'] == 'lxc' for node in data)
     
     @patch('proxmox_node_source.ProxmoxAPI')
     @patch('sys.stdout', new_callable=StringIO)

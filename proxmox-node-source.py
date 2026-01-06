@@ -79,6 +79,158 @@ def get_proxmox_connection(host: str, user: str, password: str,
         sys.exit(1)
 
 
+def get_vm_config(proxmox: ProxmoxAPI, node: str, vmid: int, vm_type: str) -> Dict[str, Any]:
+    """
+    Get the configuration of a VM or container.
+    
+    Args:
+        proxmox: Proxmox API connection
+        node: Proxmox node name
+        vmid: VM/Container ID
+        vm_type: 'qemu' or 'lxc'
+    
+    Returns:
+        Configuration dictionary or empty dict if error
+    """
+    try:
+        if vm_type == 'qemu':
+            return proxmox.nodes(node).qemu(vmid).config.get()
+        else:
+            return proxmox.nodes(node).lxc(vmid).config.get()
+    except Exception:
+        return {}
+
+
+def get_vm_status(proxmox: ProxmoxAPI, node: str, vmid: int, vm_type: str) -> Dict[str, Any]:
+    """
+    Get the current status/performance metrics of a VM or container.
+    Only available for running VMs/containers.
+    
+    Args:
+        proxmox: Proxmox API connection
+        node: Proxmox node name
+        vmid: VM/Container ID
+        vm_type: 'qemu' or 'lxc'
+    
+    Returns:
+        Status dictionary or empty dict if error or not running
+    """
+    try:
+        if vm_type == 'qemu':
+            return proxmox.nodes(node).qemu(vmid).status.current.get()
+        else:
+            return proxmox.nodes(node).lxc(vmid).status.current.get()
+    except Exception:
+        return {}
+
+
+def get_vm_os_info(proxmox: ProxmoxAPI, node: str, vmid: int, vm_type: str, 
+                   is_running: bool, config: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Get OS information for a VM or container.
+    
+    For QEMU VMs: Uses QEMU Guest Agent if available and VM is running.
+    For LXC containers: Uses config data.
+    Falls back to ostype from config.
+    
+    Args:
+        proxmox: Proxmox API connection
+        node: Proxmox node name
+        vmid: VM/Container ID
+        vm_type: 'qemu' or 'lxc'
+        is_running: Whether the VM/container is running
+        config: VM/container configuration
+    
+    Returns:
+        Dictionary with OS information (os_name, os_version, os_family, etc.)
+    """
+    os_info = {}
+    
+    # Get basic ostype from config
+    ostype = config.get('ostype', '')
+    if ostype:
+        os_info['proxmox_ostype'] = str(ostype)
+    
+    # For QEMU VMs: Try to get detailed OS info from guest agent
+    if vm_type == 'qemu' and is_running:
+        # Check if agent is enabled
+        agent_enabled = config.get('agent', 0) == 1
+        if agent_enabled:
+            try:
+                # Try to get OS info from QEMU guest agent
+                # The agent endpoint format: /nodes/{node}/qemu/{vmid}/agent/get-osinfo
+                agent_info = proxmox.nodes(node).qemu(vmid).agent('get-osinfo').get()
+                if agent_info and isinstance(agent_info, dict):
+                    # QEMU agent returns structured OS info
+                    if 'name' in agent_info:
+                        os_info['os_name'] = str(agent_info['name'])
+                    if 'version' in agent_info:
+                        os_info['os_version'] = str(agent_info['version'])
+                    if 'version-id' in agent_info:
+                        os_info['os_version_id'] = str(agent_info['version-id'])
+                    if 'pretty-name' in agent_info:
+                        os_info['os_pretty_name'] = str(agent_info['pretty-name'])
+                    if 'id' in agent_info:
+                        os_info['os_id'] = str(agent_info['id'])
+                    if 'kernel-release' in agent_info:
+                        os_info['os_kernel'] = str(agent_info['kernel-release'])
+                    if 'kernel-version' in agent_info:
+                        os_info['os_kernel_version'] = str(agent_info['kernel-version'])
+            except Exception:
+                # Guest agent not available or not responding - silently fail
+                pass
+    
+    # For LXC containers: Try to get OS info from config
+    elif vm_type == 'lxc':
+        # LXC containers may have OS info in config
+        if 'ostype' in config:
+            ostype = config['ostype']
+            # Map common LXC ostype values to OS names
+            ostype_map = {
+                'ubuntu': 'Ubuntu',
+                'debian': 'Debian',
+                'centos': 'CentOS',
+                'fedora': 'Fedora',
+                'archlinux': 'Arch Linux',
+                'alpine': 'Alpine Linux',
+                'opensuse': 'openSUSE',
+                'gentoo': 'Gentoo',
+            }
+            if ostype.lower() in ostype_map:
+                os_info['os_name'] = ostype_map[ostype.lower()]
+            else:
+                os_info['os_name'] = str(ostype).capitalize()
+        
+        # Try to get version from hostname or other config
+        if 'hostname' in config:
+            # Sometimes hostname contains OS hints
+            hostname = config['hostname']
+            if hostname:
+                os_info['os_hostname'] = str(hostname)
+    
+    # Map ostype to a more readable OS family name if we don't have detailed info
+    if 'os_name' not in os_info and ostype:
+        ostype_map = {
+            'l26': 'Linux',
+            'win7': 'Windows 7',
+            'win8': 'Windows 8',
+            'win10': 'Windows 10',
+            'win11': 'Windows 11',
+            'w2k': 'Windows 2000',
+            'w2k3': 'Windows 2003',
+            'w2k8': 'Windows 2008',
+            'wvista': 'Windows Vista',
+            'winxp': 'Windows XP',
+            'other': 'Other',
+        }
+        if ostype.lower() in ostype_map:
+            os_info['os_family'] = ostype_map[ostype.lower()]
+        else:
+            os_info['os_family'] = str(ostype).upper()
+    
+    return os_info
+
+
 def get_vm_ip_address(proxmox: ProxmoxAPI, node: str, vmid: int, vm_type: str) -> str:
     """
     Attempt to get the IP address of a VM or container.
@@ -93,10 +245,7 @@ def get_vm_ip_address(proxmox: ProxmoxAPI, node: str, vmid: int, vm_type: str) -
         IP address string or empty string if not found
     """
     try:
-        if vm_type == 'qemu':
-            config = proxmox.nodes(node).qemu(vmid).config.get()
-        else:
-            config = proxmox.nodes(node).lxc(vmid).config.get()
+        config = get_vm_config(proxmox, node, vmid, vm_type)
         
         # Try to get IP from various sources
         if 'ipconfig0' in config:
@@ -151,33 +300,98 @@ def fetch_proxmox_nodes(proxmox: ProxmoxAPI, include_vms: bool = True,
                         vmid = vm['vmid']
                         name = vm.get('name', f"vm-{vmid}")
                         status = vm.get('status', 'unknown')
+                        is_running = (status == 'running')
                         
-                        # Skip if VM is not running (optional - you may want to include all)
-                        # if status != 'running':
-                        #     continue
+                        # Get configuration and status data
+                        config = get_vm_config(proxmox, node_name, vmid, 'qemu')
+                        status_data = {}
+                        if is_running:
+                            status_data = get_vm_status(proxmox, node_name, vmid, 'qemu')
+                        
+                        # Get OS information
+                        os_info = get_vm_os_info(proxmox, node_name, vmid, 'qemu', is_running, config)
                         
                         # Get IP address
                         ip_address = get_vm_ip_address(proxmox, node_name, vmid, 'qemu')
                         
-                        # Create Rundeck node entry
+                        # Build description from config if available
+                        vm_description = config.get('description', '').strip()
+                        if vm_description:
+                            description = vm_description
+                        else:
+                            description = f"Proxmox VM {vmid} on node {node_name}"
+                        
+                        # Build tags
+                        tags_list = ['proxmox', 'vm', 'qemu', node_name]
+                        if config.get('tags'):
+                            # Proxmox tags are comma-separated
+                            tags_list.extend([tag.strip() for tag in config.get('tags', '').split(',') if tag.strip()])
+                        tags = ','.join(tags_list)
+                        
+                        # Create Rundeck node entry (attributes flattened to top level)
                         rundeck_node = {
                             'nodename': name,
                             'hostname': ip_address if ip_address else f"{name}.local",
                             'username': 'root',  # Default, can be configured
                             'osFamily': 'unix',
-                            'tags': f"proxmox,vm,qemu,{node_name}",
-                            'description': f"Proxmox VM {vmid} on node {node_name}",
-                            'attributes': {
-                                'proxmox_node': node_name,
-                                'proxmox_vmid': str(vmid),
-                                'proxmox_type': 'qemu',
-                                'proxmox_status': status
-                            }
+                            'tags': tags,
+                            'description': description,
+                            # Basic attributes at top level
+                            'proxmox_node': node_name,
+                            'proxmox_vmid': str(vmid),
+                            'proxmox_type': 'qemu',
+                            'proxmox_status': status,
+                            'proxmox_running_status': 'running' if is_running else 'stopped'
                         }
                         
-                        # Add status-specific attributes
-                        if status == 'running':
-                            rundeck_node['attributes']['proxmox_running'] = 'true'
+                        # Add configuration attributes at top level
+                        if config.get('cores'):
+                            rundeck_node['proxmox_cores'] = str(config['cores'])
+                        if config.get('sockets'):
+                            rundeck_node['proxmox_sockets'] = str(config['sockets'])
+                        if config.get('memory'):
+                            rundeck_node['proxmox_memory_mb'] = str(config['memory'])
+                        if config.get('maxmem'):
+                            rundeck_node['proxmox_maxmem_bytes'] = str(config['maxmem'])
+                        if config.get('maxdisk'):
+                            rundeck_node['proxmox_maxdisk_bytes'] = str(config['maxdisk'])
+                        if config.get('template'):
+                            rundeck_node['proxmox_template'] = 'true' if config['template'] == 1 else 'false'
+                        if config.get('agent'):
+                            rundeck_node['proxmox_agent'] = 'enabled' if config['agent'] == 1 else 'disabled'
+                        if config.get('ostype'):
+                            rundeck_node['proxmox_ostype'] = str(config['ostype'])
+                        if config.get('description'):
+                            rundeck_node['proxmox_description'] = str(config['description'])
+                        
+                        # Add OS information attributes at top level
+                        for key, value in os_info.items():
+                            rundeck_node[key] = value
+                        
+                        # Add status/performance attributes at top level (only for running VMs)
+                        if is_running and status_data:
+                            if 'uptime' in status_data:
+                                rundeck_node['proxmox_uptime_seconds'] = str(status_data['uptime'])
+                            if 'cpu' in status_data:
+                                rundeck_node['proxmox_cpu_usage'] = str(status_data['cpu'])
+                            if 'mem' in status_data:
+                                rundeck_node['proxmox_mem_used_bytes'] = str(status_data['mem'])
+                            if 'maxmem' in status_data:
+                                rundeck_node['proxmox_maxmem_bytes'] = str(status_data['maxmem'])
+                            if 'cpus' in status_data:
+                                rundeck_node['proxmox_cpus'] = str(status_data['cpus'])
+                            if 'maxcpu' in status_data:
+                                rundeck_node['proxmox_maxcpu'] = str(status_data['maxcpu'])
+                            if 'netin' in status_data:
+                                rundeck_node['proxmox_netin_bytes'] = str(status_data['netin'])
+                            if 'netout' in status_data:
+                                rundeck_node['proxmox_netout_bytes'] = str(status_data['netout'])
+                            if 'diskread' in status_data:
+                                rundeck_node['proxmox_diskread_bytes'] = str(status_data['diskread'])
+                            if 'diskwrite' in status_data:
+                                rundeck_node['proxmox_diskwrite_bytes'] = str(status_data['diskwrite'])
+                            if 'disk' in status_data:
+                                rundeck_node['proxmox_disk_used_bytes'] = str(status_data['disk'])
                         
                         rundeck_nodes.append(rundeck_node)
                 except ResourceException as e:
@@ -191,29 +405,96 @@ def fetch_proxmox_nodes(proxmox: ProxmoxAPI, include_vms: bool = True,
                         vmid = container['vmid']
                         name = container.get('name', f"ct-{vmid}")
                         status = container.get('status', 'unknown')
+                        is_running = (status == 'running')
+                        
+                        # Get configuration and status data
+                        config = get_vm_config(proxmox, node_name, vmid, 'lxc')
+                        status_data = {}
+                        if is_running:
+                            status_data = get_vm_status(proxmox, node_name, vmid, 'lxc')
+                        
+                        # Get OS information
+                        os_info = get_vm_os_info(proxmox, node_name, vmid, 'lxc', is_running, config)
                         
                         # Get IP address
                         ip_address = get_vm_ip_address(proxmox, node_name, vmid, 'lxc')
                         
-                        # Create Rundeck node entry
+                        # Build description from config if available
+                        container_description = config.get('description', '').strip()
+                        if container_description:
+                            description = container_description
+                        else:
+                            description = f"Proxmox Container {vmid} on node {node_name}"
+                        
+                        # Build tags
+                        tags_list = ['proxmox', 'container', 'lxc', node_name]
+                        if config.get('tags'):
+                            # Proxmox tags are comma-separated
+                            tags_list.extend([tag.strip() for tag in config.get('tags', '').split(',') if tag.strip()])
+                        tags = ','.join(tags_list)
+                        
+                        # Create Rundeck node entry (attributes flattened to top level)
                         rundeck_node = {
                             'nodename': name,
                             'hostname': ip_address if ip_address else f"{name}.local",
                             'username': 'root',  # Default, can be configured
                             'osFamily': 'unix',
-                            'tags': f"proxmox,container,lxc,{node_name}",
-                            'description': f"Proxmox Container {vmid} on node {node_name}",
-                            'attributes': {
-                                'proxmox_node': node_name,
-                                'proxmox_vmid': str(vmid),
-                                'proxmox_type': 'lxc',
-                                'proxmox_status': status
-                            }
+                            'tags': tags,
+                            'description': description,
+                            # Basic attributes at top level
+                            'proxmox_node': node_name,
+                            'proxmox_vmid': str(vmid),
+                            'proxmox_type': 'lxc',
+                            'proxmox_status': status,
+                            'proxmox_running_status': 'running' if is_running else 'stopped'
                         }
                         
-                        # Add status-specific attributes
-                        if status == 'running':
-                            rundeck_node['attributes']['proxmox_running'] = 'true'
+                        # Add configuration attributes at top level
+                        if config.get('cores'):
+                            rundeck_node['proxmox_cores'] = str(config['cores'])
+                        if config.get('memory'):
+                            rundeck_node['proxmox_memory_mb'] = str(config['memory'])
+                        if config.get('maxmem'):
+                            rundeck_node['proxmox_maxmem_bytes'] = str(config['maxmem'])
+                        if config.get('maxdisk'):
+                            rundeck_node['proxmox_maxdisk_bytes'] = str(config['maxdisk'])
+                        if config.get('swap'):
+                            rundeck_node['proxmox_swap_mb'] = str(config['swap'])
+                        if config.get('ostype'):
+                            rundeck_node['proxmox_ostype'] = str(config['ostype'])
+                        if config.get('description'):
+                            rundeck_node['proxmox_description'] = str(config['description'])
+                        if config.get('hostname'):
+                            rundeck_node['proxmox_hostname'] = str(config['hostname'])
+                        
+                        # Add OS information attributes at top level
+                        for key, value in os_info.items():
+                            rundeck_node[key] = value
+                        
+                        # Add status/performance attributes at top level (only for running containers)
+                        if is_running and status_data:
+                            if 'uptime' in status_data:
+                                rundeck_node['proxmox_uptime_seconds'] = str(status_data['uptime'])
+                            if 'cpu' in status_data:
+                                rundeck_node['proxmox_cpu_usage'] = str(status_data['cpu'])
+                            if 'mem' in status_data:
+                                rundeck_node['proxmox_mem_used_bytes'] = str(status_data['mem'])
+                            if 'maxmem' in status_data:
+                                rundeck_node['proxmox_maxmem_bytes'] = str(status_data['maxmem'])
+                            if 'cpus' in status_data:
+                                rundeck_node['proxmox_cpus'] = str(status_data['cpus'])
+                            if 'maxcpu' in status_data:
+                                rundeck_node['proxmox_maxcpu'] = str(status_data['maxcpu'])
+                            if 'netin' in status_data:
+                                rundeck_node['proxmox_netin_bytes'] = str(status_data['netin'])
+                            if 'netout' in status_data:
+                                rundeck_node['proxmox_netout_bytes'] = str(status_data['netout'])
+                            if 'diskread' in status_data:
+                                rundeck_node['proxmox_diskread_bytes'] = str(status_data['diskread'])
+                            if 'diskwrite' in status_data:
+                                rundeck_node['proxmox_diskwrite_bytes'] = str(status_data['diskwrite'])
+                            if 'disk' in status_data:
+                                rundeck_node['proxmox_disk_used_bytes'] = str(status_data['disk'])
                         
                         rundeck_nodes.append(rundeck_node)
                 except ResourceException as e:
@@ -261,9 +542,10 @@ def output_xml(nodes: List[Dict[str, Any]]) -> str:
         if 'tags' in node:
             node_elem.set('tags', node['tags'])
         
-        # Add attributes
-        if 'attributes' in node:
-            for key, value in node['attributes'].items():
+        # Add all other fields as attributes (excluding standard Rundeck fields)
+        standard_fields = {'nodename', 'hostname', 'username', 'osFamily', 'tags', 'description'}
+        for key, value in node.items():
+            if key not in standard_fields:
                 attr_elem = ET.SubElement(node_elem, 'attribute')
                 attr_elem.set('name', key)
                 attr_elem.set('value', str(value))

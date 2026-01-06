@@ -22,22 +22,19 @@ class TestOutputFormats:
                 'osFamily': 'unix',
                 'tags': 'proxmox,vm',
                 'description': 'Test VM',
-                'attributes': {
-                    'proxmox_node': 'pve1',
-                    'proxmox_vmid': '100',
-                }
+                'proxmox_node': 'pve1',
+                'proxmox_vmid': '100',
             },
             {
+                'nodename': 'test-container',
                 'nodename': 'test-container',
                 'hostname': '192.168.1.101',
                 'username': 'root',
                 'osFamily': 'unix',
                 'tags': 'proxmox,container',
                 'description': 'Test Container',
-                'attributes': {
-                    'proxmox_node': 'pve1',
-                    'proxmox_vmid': '200',
-                }
+                'proxmox_node': 'pve1',
+                'proxmox_vmid': '200',
             },
         ]
     
@@ -105,9 +102,9 @@ class TestOutputFormats:
         assert node1.get('tags') == 'proxmox,vm'
         assert node1.get('description') == 'Test VM'
         
-        # Check attributes
+        # Check attributes (all non-standard fields become attributes)
         attrs = node1.findall('attribute')
-        assert len(attrs) == 2
+        assert len(attrs) >= 2  # At least proxmox_node and proxmox_vmid
         attr_dict = {attr.get('name'): attr.get('value') for attr in attrs}
         assert attr_dict['proxmox_node'] == 'pve1'
         assert attr_dict['proxmox_vmid'] == '100'

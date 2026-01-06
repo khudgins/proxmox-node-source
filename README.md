@@ -16,6 +16,10 @@ A Python-based Rundeck node source plugin that dynamically imports virtual machi
 - Rundeck 3.x or higher
 - Access to a Proxmox cluster with API access
 
+## Caveats
+
+Currently, the plugin will only report host address correctly (for Linux VMs, anyway) when QEMU-guest-agent is installed on the VM, or for statically assigned IPs.
+
 ## Installation
 
 ### As a Rundeck Plugin (Recommended)
@@ -125,11 +129,63 @@ Proxmox also supports API tokens. You can use them by setting:
 
 Each node imported from Proxmox includes the following attributes:
 
+### Basic Attributes (All VMs/Containers)
 - `proxmox_node`: The Proxmox node name where the VM/container is hosted
 - `proxmox_vmid`: The VM/container ID
 - `proxmox_type`: Either 'qemu' or 'lxc'
 - `proxmox_status`: Current status (running, stopped, etc.)
-- `proxmox_running`: Set to 'true' if the VM/container is running
+- `proxmox_running_status`: Running status ('running' or 'stopped')
+
+### Configuration Attributes (When Available)
+- `proxmox_cores`: Number of CPU cores allocated
+- `proxmox_sockets`: Number of CPU sockets (VMs only)
+- `proxmox_memory_mb`: Allocated memory in megabytes
+- `proxmox_maxmem_bytes`: Maximum memory in bytes
+- `proxmox_maxdisk_bytes`: Maximum disk space in bytes
+- `proxmox_template`: Whether this is a template ('true' or 'false')
+- `proxmox_agent`: QEMU agent status ('enabled' or 'disabled', VMs only)
+- `proxmox_ostype`: Operating system type (e.g., 'l26' for Linux, 'ubuntu' for containers)
+- `proxmox_description`: VM/container description/notes from Proxmox
+- `proxmox_swap_mb`: Swap space in megabytes (containers only)
+- `proxmox_hostname`: Container hostname (containers only)
+
+### OS Detection Attributes (When Available)
+
+The plugin attempts to detect the operating system for each VM/container:
+
+**For QEMU VMs (with QEMU Guest Agent enabled and running):**
+- `os_name`: OS name (e.g., "Ubuntu", "CentOS")
+- `os_version`: OS version (e.g., "22.04", "7")
+- `os_version_id`: OS version ID
+- `os_pretty_name`: Full OS name (e.g., "Ubuntu 22.04.3 LTS")
+- `os_id`: OS identifier (e.g., "ubuntu", "centos")
+- `os_kernel`: Kernel release (e.g., "5.15.0-72-generic")
+- `os_kernel_version`: Full kernel version
+
+**For LXC Containers:**
+- `os_name`: OS name derived from ostype (e.g., "Ubuntu", "Debian", "Alpine Linux")
+- `os_hostname`: Container hostname (may contain OS hints)
+
+**Fallback (when detailed OS info not available):**
+- `os_family`: OS family name derived from ostype (e.g., "Linux", "Windows 10", "Windows 11")
+- `proxmox_ostype`: Basic OS type identifier from Proxmox config
+
+**Note:** For QEMU VMs, detailed OS detection requires:
+1. QEMU Guest Agent installed and running inside the VM
+2. Guest Agent enabled in Proxmox VM configuration (`agent: 1`)
+3. VM must be running
+
+### Performance Metrics (Running VMs/Containers Only)
+- `proxmox_uptime_seconds`: Uptime in seconds since last start
+- `proxmox_cpu_usage`: Current CPU usage (0.0 to 1.0)
+- `proxmox_mem_used_bytes`: Current memory usage in bytes
+- `proxmox_cpus`: Number of CPUs
+- `proxmox_maxcpu`: Maximum CPU usage
+- `proxmox_netin_bytes`: Total network bytes received
+- `proxmox_netout_bytes`: Total network bytes sent
+- `proxmox_diskread_bytes`: Total disk bytes read
+- `proxmox_diskwrite_bytes`: Total disk bytes written
+- `proxmox_disk_used_bytes`: Current disk usage in bytes
 
 ## Tags
 
@@ -138,6 +194,7 @@ Nodes are automatically tagged with:
 - `vm` or `container`: Type of resource
 - `qemu` or `lxc`: Technical type
 - `{node_name}`: The Proxmox node name
+- Any custom tags defined in Proxmox (if the VM/container has tags configured)
 
 ## Output Formats
 
