@@ -119,6 +119,8 @@ class TestFetchProxmoxNodes:
         container = result[0]
         # Container should have IP from ipconfig0
         assert container['hostname'] == '192.168.1.100'
+        # IP address should also be set as explicit attribute
+        assert container.get('ip_address') == '192.168.1.100'
     
     def test_vm_without_ip_uses_fallback(self, mock_proxmox):
         """Test that VM without IP uses name.local as hostname."""

@@ -231,39 +231,97 @@ def get_vm_os_info(proxmox: ProxmoxAPI, node: str, vmid: int, vm_type: str,
     return os_info
 
 
-def get_vm_ip_address(proxmox: ProxmoxAPI, node: str, vmid: int, vm_type: str) -> str:
+def get_vm_ip_address(proxmox: ProxmoxAPI, node: str, vmid: int, vm_type: str, 
+                     is_running: bool = False, config: Dict[str, Any] = None) -> str:
     """
     Attempt to get the IP address of a VM or container.
+    Tries multiple methods to find the IP address.
     
     Args:
         proxmox: Proxmox API connection
         node: Proxmox node name
         vmid: VM/Container ID
         vm_type: 'qemu' or 'lxc'
+        is_running: Whether the VM/container is running
+        config: VM/container configuration (optional, will fetch if not provided)
     
     Returns:
         IP address string or empty string if not found
     """
     try:
-        config = get_vm_config(proxmox, node, vmid, vm_type)
+        # Get config if not provided
+        if config is None:
+            config = get_vm_config(proxmox, node, vmid, vm_type)
         
-        # Try to get IP from various sources
+        # For QEMU VMs: Try QEMU guest agent first (most reliable for running VMs)
+        if vm_type == 'qemu' and is_running:
+            agent_enabled = config.get('agent', 0) == 1
+            if agent_enabled:
+                try:
+                    # Use guest agent to get network interfaces
+                    # The agent endpoint format: /nodes/{node}/qemu/{vmid}/agent/network-get-interfaces
+                    agent_network = proxmox.nodes(node).qemu(vmid).agent('network-get-interfaces').get()
+                    if agent_network and isinstance(agent_network, dict) and 'result' in agent_network:
+                        interfaces = agent_network['result']
+                        if isinstance(interfaces, list):
+                            # Look for the first non-loopback interface with an IP
+                            for interface in interfaces:
+                                if isinstance(interface, dict):
+                                    # Skip loopback interfaces
+                                    name = interface.get('name', '')
+                                    if name and name.startswith('lo'):
+                                        continue
+                                    # Check for IP addresses in ip-addresses array
+                                    ip_addresses = interface.get('ip-addresses', [])
+                                    if isinstance(ip_addresses, list):
+                                        for ip_info in ip_addresses:
+                                            if isinstance(ip_info, dict):
+                                                ip_addr = ip_info.get('ip-address', '')
+                                                ip_type = ip_info.get('ip-address-type', '')
+                                                # Prefer IPv4 addresses
+                                                if ip_addr and ip_type == 'ipv4':
+                                                    # Skip link-local and loopback addresses
+                                                    if not ip_addr.startswith('127.') and not ip_addr.startswith('169.254.'):
+                                                        return ip_addr
+                                                # Fall back to IPv6 if no IPv4 found
+                                                elif ip_addr and ip_type == 'ipv6' and not ip_addr.startswith('::1'):
+                                                    # Skip link-local IPv6
+                                                    if not ip_addr.startswith('fe80:'):
+                                                        return ip_addr
+                except Exception:
+                    # Guest agent not available or not responding - continue to other methods
+                    pass
+        
+        # For LXC containers: Try status endpoint for network info
+        if vm_type == 'lxc' and is_running:
+            try:
+                status_data = get_vm_status(proxmox, node, vmid, 'lxc')
+                # LXC status may contain network information
+                if 'netin' in status_data or 'netout' in status_data:
+                    # Network stats exist, but IP might be in config
+                    pass
+            except Exception:
+                pass
+        
+        # Try to get IP from config (works for LXC and static QEMU configs)
         if 'ipconfig0' in config:
             # LXC format: ip=192.168.1.100/24
             ipconfig = config['ipconfig0']
             if 'ip=' in ipconfig:
                 ip = ipconfig.split('ip=')[1].split('/')[0]
-                return ip
+                if ip and ip.strip():
+                    return ip.strip()
         
-        # Check for network interfaces
-        for key in config:
+        # Check for network interfaces in config
+        for key in sorted(config.keys()):
             if key.startswith('net') or key.startswith('ipconfig'):
                 value = config[key]
                 if isinstance(value, str) and '/' in value:
                     # Extract IP from format like "ip=192.168.1.100/24"
                     if 'ip=' in value:
                         ip = value.split('ip=')[1].split('/')[0]
-                        return ip
+                        if ip and ip.strip():
+                            return ip.strip()
         
         return ""
     except Exception:
@@ -312,7 +370,7 @@ def fetch_proxmox_nodes(proxmox: ProxmoxAPI, include_vms: bool = True,
                         os_info = get_vm_os_info(proxmox, node_name, vmid, 'qemu', is_running, config)
                         
                         # Get IP address
-                        ip_address = get_vm_ip_address(proxmox, node_name, vmid, 'qemu')
+                        ip_address = get_vm_ip_address(proxmox, node_name, vmid, 'qemu', is_running, config)
                         
                         # Build description from config if available
                         vm_description = config.get('description', '').strip()
@@ -343,6 +401,10 @@ def fetch_proxmox_nodes(proxmox: ProxmoxAPI, include_vms: bool = True,
                             'proxmox_status': status,
                             'proxmox_running_status': 'running' if is_running else 'stopped'
                         }
+                        
+                        # Add IP address as explicit attribute if found
+                        if ip_address:
+                            rundeck_node['ip_address'] = ip_address
                         
                         # Add configuration attributes at top level
                         if config.get('cores'):
@@ -417,7 +479,7 @@ def fetch_proxmox_nodes(proxmox: ProxmoxAPI, include_vms: bool = True,
                         os_info = get_vm_os_info(proxmox, node_name, vmid, 'lxc', is_running, config)
                         
                         # Get IP address
-                        ip_address = get_vm_ip_address(proxmox, node_name, vmid, 'lxc')
+                        ip_address = get_vm_ip_address(proxmox, node_name, vmid, 'lxc', is_running, config)
                         
                         # Build description from config if available
                         container_description = config.get('description', '').strip()
@@ -448,6 +510,10 @@ def fetch_proxmox_nodes(proxmox: ProxmoxAPI, include_vms: bool = True,
                             'proxmox_status': status,
                             'proxmox_running_status': 'running' if is_running else 'stopped'
                         }
+                        
+                        # Add IP address as explicit attribute if found
+                        if ip_address:
+                            rundeck_node['ip_address'] = ip_address
                         
                         # Add configuration attributes at top level
                         if config.get('cores'):
