@@ -16,9 +16,23 @@ A Python-based Rundeck node source plugin that dynamically imports virtual machi
 - Rundeck 3.x or higher
 - Access to a Proxmox cluster with API access
 
-## Caveats
+## IP Address Detection
 
-Currently, the plugin will only report host address correctly (for Linux VMs, anyway) when QEMU-guest-agent is installed on the VM, or for statically assigned IPs.
+The plugin attempts to detect IP addresses using multiple methods:
+
+**For QEMU VMs:**
+- **Primary method**: Uses QEMU Guest Agent to query network interfaces (requires agent enabled and VM running)
+- **Fallback**: Extracts IP from VM configuration if statically assigned
+- Automatically filters out invalid values like 'dhcp', 'auto', etc.
+
+**For LXC Containers:**
+- Extracts IP from container configuration (`ipconfig0` or network interfaces)
+- Filters out invalid values like 'dhcp', 'auto', etc.
+
+**Note**: For QEMU VMs using DHCP, the QEMU Guest Agent is the most reliable method to get the actual assigned IP address. Ensure:
+1. QEMU Guest Agent is installed and running inside the VM
+2. Guest Agent is enabled in Proxmox VM configuration (`agent: 1`)
+3. VM is running
 
 ## Installation
 
@@ -72,7 +86,28 @@ If you prefer to use it as a script-based resource model source without the plug
 
 ## Configuration in Rundeck
 
-### Option 1: Script-based Resource Model Source
+### Option 1: Using the Plugin (Recommended)
+
+When installed as a Rundeck plugin (see [INSTALL.md](INSTALL.md)):
+
+1. In Rundeck, go to your Project Settings
+2. Navigate to "Resource Model Sources"
+3. Add a new "Proxmox Node Source" resource model source
+4. Configure the following fields:
+   - **Proxmox Host**: Your Proxmox hostname or IP address
+   - **Proxmox User**: Username with realm (e.g., `root@pam`)
+   - **Proxmox Password Storage Path**: (Optional) Path to password in Rundeck Key Storage (e.g., `keys/proxmox/password`)
+   - **Proxmox Password**: (Optional) Direct password (leave blank if using key storage)
+   - **Proxmox Port**: API port (default: 8006)
+   - **Verify SSL**: Enable SSL certificate verification
+   - **Include VMs**: Include QEMU VMs (default: true)
+   - **Include Containers**: Include LXC containers (default: true)
+   - **Default Username**: Default username for nodes (default: root)
+   - **Output Format**: Output format (default: yaml)
+
+**Security Note**: It's recommended to use Rundeck Key Storage for the password instead of entering it directly. Store the password in Key Storage and reference it using the "Proxmox Password Storage Path" field.
+
+### Option 2: Script-based Resource Model Source
 
 1. In Rundeck, go to your Project Settings
 2. Navigate to "Resource Model Sources"
@@ -97,17 +132,7 @@ If you prefer to use it as a script-based resource model source without the plug
    - `--no-vms`: Exclude VMs, only include containers
    - `--no-containers`: Exclude containers, only include VMs
 
-### Option 2: Using Environment Variables
-
-You can also use environment variables for sensitive data:
-
-```bash
-export PROXMOX_HOST=your-proxmox-host.example.com
-export PROXMOX_USER=root@pam
-export PROXMOX_PASSWORD=your-password
-```
-
-Then modify the script to read from environment variables if arguments are not provided.
+**Note**: When used as a plugin, configuration is passed via environment variables (`RD_CONFIG_*`) automatically. The script also accepts command-line arguments for local testing.
 
 ## Authentication
 
@@ -135,6 +160,7 @@ Each node imported from Proxmox includes the following attributes:
 - `proxmox_type`: Either 'qemu' or 'lxc'
 - `proxmox_status`: Current status (running, stopped, etc.)
 - `proxmox_running_status`: Running status ('running' or 'stopped')
+- `ip_address`: IP address of the VM/container (when available)
 
 ### Configuration Attributes (When Available)
 - `proxmox_cores`: Number of CPU cores allocated
@@ -264,9 +290,27 @@ If you get "Couldn't authenticate user" errors:
 - Ensure the user has at least "PVEAuditor" role or higher on the datacenter
 
 ### IP Address Not Found
-- The script attempts to extract IP addresses from VM/container configuration
-- If IPs are not found, nodes will use `{name}.local` as hostname
-- You may need to configure IP addresses manually in Rundeck or modify the script to use a different method
+
+If IP addresses are not being detected:
+
+1. **For QEMU VMs with DHCP**:
+   - Ensure QEMU Guest Agent is installed and running inside the VM
+   - Verify Guest Agent is enabled in Proxmox VM configuration (`agent: 1`)
+   - Check that the VM is running (agent queries only work on running VMs)
+   - Test agent connectivity in Proxmox UI (should show IP in VM summary)
+
+2. **For QEMU VMs with static IPs**:
+   - Verify the IP is configured in the VM's network settings
+   - Check that the config doesn't just contain 'dhcp' (which is filtered out)
+
+3. **For LXC Containers**:
+   - Ensure IP is configured in `ipconfig0` or network interface settings
+   - Verify the IP format is correct (e.g., `ip=192.168.1.100/24`)
+
+4. **General**:
+   - If IPs are not found, nodes will use `{name}.local` as hostname
+   - The `ip_address` attribute will be empty if no IP is detected
+   - You can manually configure IP addresses in Rundeck if needed
 
 ## Testing
 
@@ -296,5 +340,7 @@ This should output YAML (default) with all discovered nodes. You can also use `-
 
 ## License
 
-This plugin is provided as-is. Feel free to modify and adapt it to your needs.
+This plugin is licensed under the GNU General Public License v3.0 or later (GPL-3.0-or-later).
+
+See the LICENSE file or the header of `proxmox-node-source.py` for full license details.
 
