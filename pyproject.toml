@@ -1,6 +1,6 @@
 [project]
 name = "proxmox-node-source"
-version = "1.0.0"
+version = "1.2.0"
 description = "Rundeck Node Source Plugin for Proxmox - Polls a Proxmox cluster to list VMs and containers as Rundeck nodes"
 readme = "README.md"
 requires-python = ">=3.7"
