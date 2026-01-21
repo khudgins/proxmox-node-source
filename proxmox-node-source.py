@@ -668,6 +668,306 @@ def fetch_proxmox_nodes(proxmox: ProxmoxAPI, include_vms: bool = True,
     return rundeck_nodes
 
 
+def parse_node_filter(filter_string: str) -> List[Dict[str, Any]]:
+    """
+    Parse a Rundeck node filter string into a list of filter clauses.
+    
+    Rundeck filter syntax:
+    - attribute: value (exact match or regex)
+    - !attribute: value (negation)
+    - Multiple clauses are space-separated and ANDed together
+    - Values can be comma-separated for OR logic
+    - Tags support special syntax: + for AND, comma for OR
+    
+    Examples:
+    - "tags: web+prod" - nodes with both 'web' AND 'prod' tags
+    - "tags: web,prod" - nodes with either 'web' OR 'prod' tags
+    - "hostname: dev.*" - hostname matches regex 'dev.*'
+    - "!osFamily: windows" - exclude nodes with osFamily 'windows'
+    - "tags: web hostname: dev.*" - nodes with 'web' tag AND hostname matching 'dev.*'
+    
+    Args:
+        filter_string: The filter string to parse
+    
+    Returns:
+        List of filter clause dictionaries with keys: 'attribute', 'negate', 'values', 'is_regex'
+    """
+    if not filter_string or not filter_string.strip():
+        return []
+    
+    clauses = []
+    # Split by spaces, but preserve quoted strings and attribute:value pairs
+    parts = []
+    current_part = ""
+    in_quotes = False
+    quote_char = None
+    
+    for i, char in enumerate(filter_string):
+        if char in ('"', "'") and (not current_part or current_part[-1] != '\\'):
+            if not in_quotes:
+                in_quotes = True
+                quote_char = char
+            elif char == quote_char:
+                in_quotes = False
+                quote_char = None
+            current_part += char
+        elif char == ' ' and not in_quotes:
+            # Check if this space is part of an attribute:value pair
+            # If current_part ends with ':', it's an attribute and we should include the space and next part
+            if current_part.strip().endswith(':'):
+                # This is an attribute, keep the space and continue
+                current_part += char
+            else:
+                # Normal space, split here
+                if current_part.strip():
+                    parts.append(current_part.strip())
+                current_part = ""
+        else:
+            current_part += char
+    
+    if current_part.strip():
+        parts.append(current_part.strip())
+    
+    # Post-process: combine parts that end with ':' with the next part
+    # This handles cases where space-splitting separated "attribute:" from "value"
+    combined_parts = []
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        # If this part ends with ':' and there's a next part, combine them
+        if part.endswith(':') and i + 1 < len(parts):
+            # Combine with next part
+            combined_parts.append(part + parts[i + 1])
+            i += 2
+        else:
+            combined_parts.append(part)
+            i += 1
+    parts = combined_parts
+    
+    for part in parts:
+        if not part:
+            continue
+        
+        # Check for negation
+        negate = False
+        if part.startswith('!'):
+            negate = True
+            part = part[1:]
+        
+        # Split attribute and value
+        if ':' not in part:
+            # If no colon, treat as nodename filter (Rundeck shorthand)
+            clauses.append({
+                'attribute': 'nodename',
+                'negate': negate,
+                'values': [part],
+                'is_regex': False
+            })
+            continue
+        
+        attr_part, value_part = part.split(':', 1)
+        attribute = attr_part.strip()
+        value = value_part.strip()
+        
+        # Remove quotes if present
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        elif value.startswith("'") and value.endswith("'"):
+            value = value[1:-1]
+        
+        # Handle tags with special syntax (check before regex detection)
+        # For tags, + and , are operators, not regex characters
+        if attribute == 'tags':
+            # Tags can have complex syntax: "web+prod,dev" means (web AND prod) OR dev
+            # Or simple: "web" or "web+prod"
+            if ',' in value:
+                # Multiple tag groups (ORed together)
+                values = []
+                for tag_group in value.split(','):
+                    tag_group = tag_group.strip()
+                    if '+' in tag_group:
+                        # AND logic for tags
+                        values.append({
+                            'type': 'and',
+                            'tags': [t.strip() for t in tag_group.split('+')]
+                        })
+                    else:
+                        # Single tag in group
+                        values.append({
+                            'type': 'or',
+                            'tags': [tag_group.strip()]
+                        })
+            elif '+' in value:
+                # Single AND group: "web+prod"
+                values = [{
+                    'type': 'and',
+                    'tags': [t.strip() for t in value.split('+')]
+                }]
+            else:
+                # Single tag: "web"
+                values = [{
+                    'type': 'or',
+                    'tags': [value.strip()]
+                }]
+            
+            clauses.append({
+                'attribute': attribute,
+                'negate': negate,
+                'values': values,
+                'is_regex': False,
+                'is_tag': True
+            })
+            continue
+        
+        # Check if value contains regex patterns (.*, .+, etc.)
+        # Note: + is excluded from regex detection as it's used in tag syntax
+        # For non-tag attributes, we check for regex patterns
+        is_regex = bool(re.search(r'[.*?^$|()\[\]{}]', value)) or ('.' in value and '*' in value)
+        
+        if ',' in value and not is_regex:
+            # Simple comma-separated OR for non-tag attributes
+            values = [v.strip() for v in value.split(',')]
+            clauses.append({
+                'attribute': attribute,
+                'negate': negate,
+                'values': values,
+                'is_regex': False
+            })
+        else:
+            # Single value
+            clauses.append({
+                'attribute': attribute,
+                'negate': negate,
+                'values': [value],
+                'is_regex': is_regex
+            })
+    
+    return clauses
+
+
+def evaluate_node_filter(node: Dict[str, Any], filter_clauses: List[Dict[str, Any]]) -> bool:
+    """
+    Evaluate whether a node matches the filter clauses.
+    
+    All non-negated clauses must match (AND logic).
+    Negated clauses must not match.
+    
+    Args:
+        node: The node dictionary to evaluate
+        filter_clauses: List of filter clause dictionaries from parse_node_filter
+    
+    Returns:
+        True if node matches the filter, False otherwise
+    """
+    if not filter_clauses:
+        return True
+    
+    for clause in filter_clauses:
+        attribute = clause['attribute']
+        negate = clause.get('negate', False)
+        values = clause['values']
+        is_regex = clause.get('is_regex', False)
+        is_tag = clause.get('is_tag', False)
+        
+        # Get node attribute value
+        node_value = node.get(attribute, '')
+        
+        # Handle special case: nodename can also match 'name' attribute
+        if attribute == 'nodename' and not node_value:
+            node_value = node.get('name', '')
+        
+        # Convert to string for comparison
+        if node_value is None:
+            node_value = ''
+        else:
+            node_value = str(node_value)
+        
+        # Handle tag filtering with special syntax
+        if is_tag and attribute == 'tags':
+            node_tags = set()
+            if 'tags' in node:
+                # Tags are comma-separated in Rundeck format
+                node_tags = set(tag.strip() for tag in str(node['tags']).split(',') if tag.strip())
+            
+            # Evaluate tag groups (each group is ORed, groups are ANDed)
+            matches = False
+            for tag_group in values:
+                if tag_group['type'] == 'and':
+                    # All tags in group must be present
+                    if all(tag in node_tags for tag in tag_group['tags']):
+                        matches = True
+                        break
+                else:  # 'or'
+                    # Any tag in group must be present
+                    if any(tag in node_tags for tag in tag_group['tags']):
+                        matches = True
+                        break
+            
+            if negate:
+                if matches:
+                    return False
+            else:
+                if not matches:
+                    return False
+        else:
+            # Regular attribute filtering
+            matches = False
+            
+            for value in values:
+                if is_regex:
+                    # Regex matching
+                    try:
+                        if re.search(value, node_value, re.IGNORECASE):
+                            matches = True
+                            break
+                    except re.error:
+                        # Invalid regex, fall back to exact match
+                        if node_value.lower() == value.lower():
+                            matches = True
+                            break
+                else:
+                    # Exact match (case-insensitive)
+                    if node_value.lower() == value.lower():
+                        matches = True
+                        break
+            
+            if negate:
+                if matches:
+                    return False
+            else:
+                if not matches:
+                    return False
+    
+    # All clauses matched
+    return True
+
+
+def filter_nodes(nodes: List[Dict[str, Any]], filter_string: str) -> List[Dict[str, Any]]:
+    """
+    Filter a list of nodes using a Rundeck filter string.
+    
+    Args:
+        nodes: List of node dictionaries
+        filter_string: Rundeck filter string
+    
+    Returns:
+        Filtered list of nodes
+    """
+    if not filter_string or not filter_string.strip():
+        return nodes
+    
+    filter_clauses = parse_node_filter(filter_string)
+    if not filter_clauses:
+        return nodes
+    
+    filtered_nodes = []
+    for node in nodes:
+        if evaluate_node_filter(node, filter_clauses):
+            filtered_nodes.append(node)
+    
+    return filtered_nodes
+
+
 def output_json(nodes: List[Dict[str, Any]]) -> str:
     """Output nodes in JSON format."""
     return json.dumps(nodes, indent=2)
@@ -807,6 +1107,10 @@ def main():
         default='yaml',
         help='Output format: json, yaml, or xml (default: yaml)'
     )
+    parser.add_argument(
+        '--node-filter',
+        help='Rundeck node filter string to apply before returning nodes (e.g., "tags: web+prod hostname: dev.*")'
+    )
     
     args = parser.parse_args()
     
@@ -821,6 +1125,7 @@ def main():
     proxmox_port = int(os.environ.get('RD_CONFIG_PROXMOX_PORT') or args.proxmox_port or 8006)
     default_username = os.environ.get('RD_CONFIG_DEFAULT_USERNAME') or args.default_username or 'root'
     output_format = os.environ.get('RD_CONFIG_OUTPUT_FORMAT') or args.output_format or 'yaml'
+    node_filter = os.environ.get('RD_CONFIG_NODE_FILTER') or args.node_filter or ''
     verify_ssl_flag = os.environ.get('RD_CONFIG_VERIFY_SSL', str(args.verify_ssl_flag))
     include_vms_flag = os.environ.get('RD_CONFIG_INCLUDE_VMS', str(args.include_vms_flag))
     include_containers_flag = os.environ.get('RD_CONFIG_INCLUDE_CONTAINERS', str(args.include_containers_flag))
@@ -887,6 +1192,10 @@ def main():
     if default_username != 'root':
         for node in rundeck_nodes:
             node['username'] = default_username
+    
+    # Apply node filter if specified
+    if node_filter:
+        rundeck_nodes = filter_nodes(rundeck_nodes, node_filter)
     
     # Output in the requested format
     if output_format == 'json':

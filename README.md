@@ -104,6 +104,7 @@ When installed as a Rundeck plugin (see [INSTALL.md](INSTALL.md)):
    - **Include Containers**: Include LXC containers (default: true)
    - **Default Username**: Default username for nodes (default: root)
    - **Output Format**: Output format (default: yaml)
+   - **Node Filter**: (Optional) Rundeck node filter string to apply before returning nodes
 
 **Security Note**: It's recommended to use Rundeck Key Storage for the password instead of entering it directly. Store the password in Key Storage and reference it using the "Proxmox Password Storage Path" field.
 
@@ -131,6 +132,7 @@ When installed as a Rundeck plugin (see [INSTALL.md](INSTALL.md)):
    - `--verify-ssl`: Enable SSL certificate verification
    - `--no-vms`: Exclude VMs, only include containers
    - `--no-containers`: Exclude containers, only include VMs
+   - `--node-filter FILTER`: Apply Rundeck node filter before returning nodes
 
 **Note**: When used as a plugin, configuration is passed via environment variables (`RD_CONFIG_*`) automatically. The script also accepts command-line arguments for local testing.
 
@@ -221,6 +223,83 @@ Nodes are automatically tagged with:
 - `qemu` or `lxc`: Technical type
 - `{node_name}`: The Proxmox node name
 - Any custom tags defined in Proxmox (if the VM/container has tags configured)
+
+## Node Filtering
+
+The plugin supports pre-filtering nodes using Rundeck's node filter syntax. This allows you to filter nodes before they are returned to Rundeck, reducing the number of nodes imported.
+
+### Filter Syntax
+
+Filters use the format `attribute: value` where multiple clauses are space-separated and ANDed together:
+
+- **Basic matching**: `hostname: dev.*` - matches nodes with hostname matching regex `dev.*`
+- **Exact match**: `proxmox_status: running` - matches nodes with exact status "running"
+- **Negation**: `!osFamily: windows` - excludes nodes with osFamily "windows"
+- **Multiple values (OR)**: `hostname: dev1,dev2` - matches nodes with hostname "dev1" OR "dev2"
+- **Tag filtering (AND)**: `tags: web+prod` - matches nodes with both "web" AND "prod" tags
+- **Tag filtering (OR)**: `tags: web,prod` - matches nodes with either "web" OR "prod" tags
+- **Combined**: `tags: web+prod hostname: dev.* !osFamily: windows` - matches nodes with tags "web" AND "prod", hostname matching "dev.*", and osFamily NOT "windows"
+
+### Filter Examples
+
+**Filter by status:**
+```
+proxmox_status: running
+```
+
+**Filter by type:**
+```
+proxmox_type: qemu
+```
+
+**Filter by tags (must have both):**
+```
+tags: production+appserver
+```
+
+**Filter by tags (either one):**
+```
+tags: web,api
+```
+
+**Filter by hostname pattern:**
+```
+hostname: dev.*
+```
+
+**Exclude stopped nodes:**
+```
+!proxmox_status: stopped
+```
+
+**Complex filter (production web servers on specific node):**
+```
+tags: production+web proxmox_node: pve1 proxmox_status: running
+```
+
+### Using Filters
+
+**In Rundeck Plugin Configuration:**
+1. In the plugin configuration, find the "Node Filter" field
+2. Enter your filter string (e.g., `tags: production+web proxmox_status: running`)
+3. Save the configuration
+
+**Via Command Line:**
+```bash
+uv run ./proxmox-node-source.py \
+  --proxmox-host your-proxmox-host.example.com \
+  --proxmox-user root@pam \
+  --proxmox-password your-password \
+  --node-filter "tags: production+web proxmox_status: running"
+```
+
+**Available Filter Attributes:**
+- Standard Rundeck attributes: `nodename`, `hostname`, `username`, `osFamily`, `tags`, `description`
+- Proxmox-specific attributes: `proxmox_node`, `proxmox_vmid`, `proxmox_type`, `proxmox_status`, `proxmox_running_status`, `ip_address`
+- Configuration attributes: `proxmox_cores`, `proxmox_memory_mb`, `proxmox_ostype`, etc.
+- OS detection attributes: `os_name`, `os_version`, `os_family`, etc.
+
+**Note**: Filters are applied after fetching all nodes from Proxmox but before returning them to Rundeck. This means the filter runs locally in the plugin, not on the Proxmox server.
 
 ## Output Formats
 

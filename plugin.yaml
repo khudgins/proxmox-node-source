@@ -1,6 +1,6 @@
 name: Proxmox Node Source
-version: 1.2.0
-rundeckPluginVersion: 1.2
+version: 1.3.0
+rundeckPluginVersion: 1.3
 author: Keith Hudgins
 date: 2025-12-24
 description: Node source plugin for Proxmox cluster - dynamically imports VMs and containers as Rundeck nodes
@@ -78,4 +78,9 @@ providers:
         required: false
         default: true
         description: Include containers (LXC) in node list
+      - name: node_filter
+        title: Node Filter
+        type: String
+        required: false
+        description: "Optional Rundeck node filter to apply before returning nodes. Examples: 'tags: web+prod', 'hostname: dev.*', '!osFamily: windows', 'proxmox_status: running'. Multiple clauses are space-separated and ANDed together."
 
